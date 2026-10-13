@@ -8,6 +8,7 @@ from sqlalchemy import delete
 from sqlalchemy import exc
 from sqlalchemy import FetchedValue
 from sqlalchemy import ForeignKey
+from sqlalchemy import func
 from sqlalchemy import insert
 from sqlalchemy import Integer
 from sqlalchemy import literal
@@ -397,6 +398,46 @@ class OnUpdatePopulationTest(fixtures.TestBase):
         s.commit()
         s.expire_all()
         eq_(e1.some_server_value, server_new_value)
+
+    @testing.variation("synchronize", ["fetch", "evaluate"])
+    def test_update_expires_on_all_matched_objects(
+        self, decl_base, synchronize
+    ):
+        """test #XXXXX"""
+
+        class Thing(decl_base):
+            __tablename__ = "thing"
+
+            id: Mapped[int] = mapped_column(primary_key=True)
+            name: Mapped[str] = mapped_column(String(50))
+            stamped: Mapped[str] = mapped_column(String(50), nullable=True)
+            touched: Mapped[str] = mapped_column(
+                String(50), server_onupdate=FetchedValue()
+            )
+
+        decl_base.metadata.create_all(testing.db)
+        s = fixture_session()
+
+        things = [
+            Thing(id=i, name=f"thing {i}", touched="old") for i in (1, 2, 3)
+        ]
+        s.add_all(things)
+        s.flush()
+
+        # simulate the server-side onupdate out of band
+        s.connection().execute(update(Thing.__table__).values(touched="new"))
+
+        s.execute(
+            update(Thing).values(name="renamed", stamped=func.upper("z")),
+            execution_options={"synchronize_session": synchronize.name},
+        )
+
+        for thing in things:
+            assert "touched" not in thing.__dict__
+            assert "stamped" not in thing.__dict__
+
+        eq_([thing.touched for thing in things], ["new", "new", "new"])
+        eq_([thing.stamped for thing in things], ["Z", "Z", "Z"])
 
 
 class PGIssue11849Test(fixtures.DeclarativeMappedTest):
